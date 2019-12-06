@@ -1,0 +1,226 @@
+---
+title: "ESA 5-year Status Review Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    css: custom.css
+    social: menu
+    df_print: paged
+    navbar:
+    - {title: "CCI", align: right, href: "https://defenders-cci.org"}
+    - {title: "", icon: "fa-question-circle fa-lg", align: right, href: "mailto:jmalcom@defenders.org?subject=Five-year reviews"}
+    - {title: "", icon: "fa-github fa-lg", align: right, href: "https://github.com/Defenders-CCI/"}
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lubridate)
+library(plotly)
+library(shiny)
+library(shinydashboard)
+library(tidyverse)
+
+# "https://ecos.fws.gov/ecp/pullreports/catalog/species/report/species/export?format=csv&distinct=true&columns=%2Fspecies%40sn%2Ccn%2Cstatus%2Cdesc%2Clisting_date%2Ccountry%3B%2Fspecies%2Ftaxonomy%40group%3B%2Fspecies%2Ffws_region%40desc&sort=%2Fspecies%40sn%20asc&filter=%2Fspecies%40country%20!%3D%20'Foreign'&filter=%2Fspecies%40status%20in%20('Endangered'%2C'Threatened')"
+list <- read_csv("ESA_listed.csv")
+names(list) <- c("scientific", "sci_url", "common", "status", "entity", 
+                "listing_date", "foreign", "taxon", "region")
+list$listing_date <- mdy(list$listing_date)
+list <- filter(list, region != "National Oceanic and Atmospheric Administration")
+
+# "https://ecos.fws.gov/ecp/pullreports/catalog/species/report/species/export?format=csv&distinct=true&columns=%2Fspecies%40sn%2Ccn%2Cstatus%2Cdesc%2Clisting_date%2Ccountry%3B%2Fspecies%2Fdocument%40doc_date%2Ctitle&sort=%2Fspecies%40cn%20asc%3B%2Fspecies%40sn%20asc%3B%2Fspecies%40country%20desc&filter=%2Fspecies%40status%20in%20('Endangered'%2C'Threatened')&filter=%2Fspecies%40country%20!%3D%20'Foreign'&filter=%2Fspecies%2Fdocument%40doc_type%20%3D%20'Five%20Year%20Review'"
+five <- read_csv("5yr_data.csv")
+names(five) <- c("scientific", "sci_url", "common", "status", "entity", 
+                "listing_date", "foreign", "fiveyr_date", "fiveyr_name",
+                "fiveyr_url")
+five$fiveyr_date <- mdy(five$fiveyr_date)
+
+dat <- left_join(list, select(five, c(1, 8:10)), by = "scientific")
+
+old_list <- filter(dat, listing_date < Sys.Date() - years(5))
+with_fiveyr <- filter(old_list, !is.na(old_list$fiveyr_date)) %>%
+  arrange(scientific, entity, desc(fiveyr_date))
+uniq_fiveyr <- distinct(with_fiveyr, scientific, entity, .keep_all = TRUE)
+```
+
+
+Filters {.sidebar}
+-----------------------------------------------------
+
+### Filters
+
+```{r filters, echo=FALSE}
+taxa <- c("All", unique(list$taxon) %>% sort(decreasing = FALSE))
+regions <- c("All", unique(list$region) %>% sort(decreasing = FALSE))
+
+selectInput(
+  "taxa1",
+  "Species group",
+  taxa
+)
+
+selectInput(
+  "region1",
+  "Region",
+  regions
+)
+```
+
+```{r filtering, echo=FALSE}
+usr_sel <- function(df, tx, re) {
+  if(tx != "All") {
+    df <- filter(df, taxon == tx)
+  }
+  if(re != "All") {
+    df <- filter(df, region == re)
+  }
+  #if(dim(df)[1] == 0) stop("No data matches.")
+  return(df)
+}
+
+uniq_sel <- reactive({ 
+  usr_sel(uniq_fiveyr, input$taxa1, input$region1) 
+})
+
+list_sel <- reactive({ 
+  usr_sel(list, input$taxa1, input$region1) 
+})
+```
+
+### Background
+
+The Endangered Species Act requires that the status of listed species be reviewed at least every five years. [Long-term funding shortfalls](https://defenders-cci.org/publication/conservation-funding/) have meant that these reviews have been deprioritized in favor of direct recovery work. This dashboard provides an overview of five-year review status of species managed primarily by the [U.S. Fish and Wildlife Service](https://www.fws.gov) based on their [data service](https://ecos.fws.gov/ecp/report/ad-hoc-documentation?catalogId=species&reportId=species), updated daily. 
+
+Row {data-height=750}
+-----------------------------------------------------
+
+### Distribution of most-recent five-year reviews
+
+```{r fig1, echo=FALSE}
+vline <- function(x = 0, color = "rgba(0,0,0,0.3)") {
+  list(
+    type = "line", 
+    y0 = 0,
+    y1 = 100, 
+    yref = "paper",
+    x0 = x, 
+    x1 = x, 
+    line = list(color = color,
+                style = "dash")
+  )
+}
+
+renderPlotly({
+  cur <- uniq_sel()
+  nbins <- year(uniq_fiveyr$fiveyr_date) %>% unique() %>% length() 
+  if(nrow(cur) > 0) {
+    plot_ly(
+      data = uniq_fiveyr,
+      type = "histogram",
+      x = uniq_fiveyr$fiveyr_date,
+      marker = list(color = "rgba(0,0,0,0.2)"),
+      nbinsx = nbins * 2,
+      xbins = list(start = min(uniq_fiveyr$fiveyr_date),
+                   end = max(uniq_fiveyr$fiveyr_date)),
+      name = "All data"
+    ) %>% 
+      add_histogram(x = cur$fiveyr_date,
+                    marker = list( color = "#EA8439" ),
+                    nbinsx = nbins * 2,
+                    xbins = list(start = min(uniq_fiveyr$fiveyr_date),
+                                 end = max(uniq_fiveyr$fiveyr_date)),
+                    name = "Filtered") %>%
+      layout(shapes = list(vline(Sys.Date() - years(5)))) %>%
+      add_annotations(x = (Sys.Date() - years(4)),
+                      y = 210,
+                      text = "Five years past",
+                      xref = "x",
+                      yref = "y",
+                      showarrow = FALSE,
+                      font = list(color = "rgba(0,0,0,0.1)",
+                                  family = 'sans-serif',
+                                  size = 18)
+        ) %>%
+      layout(barmode = "overlay",
+             xaxis = list(title = "Date of review"),
+             yaxis = list(title = "Number of reviews"))
+  } else {
+    blank <- tibble(x = c(0), y = c(0), text = "No data match filters")
+    ax <- list(
+      title = "",
+      zeroline = FALSE,
+      showline = FALSE,
+      showticklabels = FALSE,
+      showgrid = FALSE
+    )
+    plot_ly(
+      data = blank,
+      type = "scatter",
+      mode = "text",
+      x = ~x,
+      y = ~y,
+      text = ~text,
+      textfont = list(color = '#000000', size = 22)
+    ) %>%
+      layout(xaxis = ax, yaxis = ax)
+  }
+})
+```
+
+Row {data-height=150}
+-------------------------------------------------------------
+### {.value-box}
+
+```{r info1, echo=FALSE}
+flexdashboard::renderValueBox({
+  flexdashboard::valueBox(
+    caption = "Number of ESA-Listed Species with FWS Lead",
+    value = dim(list_sel())[1],
+    color = "info"
+  )
+})
+```
+
+### {.value-box}
+
+```{r}
+flexdashboard::renderValueBox({
+  old_enough <- filter(list_sel(), listing_date < Sys.Date() - years(5))
+  flexdashboard::valueBox(
+    caption = "Number of Species Listed > 5 Years",
+    value = dim(old_enough)[1],
+    color = "info"
+  )
+})
+```
+
+### {.value-box}
+
+```{r}
+flexdashboard::renderValueBox({
+  timely <- filter(uniq_sel(), fiveyr_date > Sys.Date() - years(5))
+  flexdashboard::valueBox(
+    caption = "Number of Species with Timely Reviews",
+    value = dim(timely)[1],
+    color = "success",
+    icon = "fa-check-circle"
+  )
+})
+```
+
+### {.value-box}
+
+```{r}
+flexdashboard::renderValueBox({
+  timely <- filter(uniq_sel(), fiveyr_date > Sys.Date() - years(5))
+  old_enough <- filter(list_sel(), listing_date < Sys.Date() - years(5))
+  flexdashboard::valueBox(
+    caption = "Number of Species with Outdated Reviews",
+    value = dim(old_enough)[1] - dim(timely)[1],
+    color = "danger",
+    icon = "fa-times-circle"
+  )
+})
+```
+
